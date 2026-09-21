@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Portal Filters</title>
+  <style>
+    :root {
+      --accent: #7c3cff;
+      --ice: #bcd6ff;
+      --glass: rgba(20, 16, 32, 0.55);
+      --text: #f4f1ff;
+      --muted: rgba(244, 241, 255, 0.7);
+      --error: #ff6b8b;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      background: #000; color: var(--text);
+      overflow: hidden;
+      font-family: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    /* The video is only a texture source. Kept in the DOM (not display:none)
+       because Safari stops decoding hidden videos. */
+    #video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+    #intro {
+      position: fixed; inset: 0;
+      display: grid; place-items: center;
+      padding: 24px;
+      background: radial-gradient(circle at 50% 40%, #2a1650 0%, #000 70%);
+      transition: opacity .4s;
+      overflow-y: auto;
+    }
+    #intro.hidden { opacity: 0; pointer-events: none; }
+    .card { max-width: 32rem; text-align: center; }
+    .card h1 { font-size: clamp(2rem, 7vw, 3.2rem); margin: 0 0 .5rem; letter-spacing: -0.02em; }
+    .card p { color: var(--muted); line-height: 1.5; margin: 0 0 1.25rem; }
+    .gestures {
+      text-align: left; margin: 0 auto 1.5rem; padding: 0; list-style: none;
+      display: grid; gap: .6rem; max-width: 26rem;
+    }
+    .gestures li { color: var(--muted); line-height: 1.45; }
+    .gestures b { color: var(--text); font-weight: 600; }
+    button {
+      font: inherit; font-size: 1rem; font-weight: 600;
+      padding: 14px 26px; border: none; border-radius: 14px;
+      background: var(--accent); color: white; cursor: pointer;
+    }
+    button:disabled { opacity: .6; cursor: default; }
+    button:focus-visible { outline: 3px solid white; outline-offset: 3px; }
+    #intro-status { margin-top: 1rem; min-height: 1.5em; color: var(--muted); font-size: .95rem; }
+    #intro-status.error { color: var(--error); }
+
+    #hud {
+      position: fixed; left: 0; right: 0;
+      bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+      display: flex; flex-direction: column; align-items: center; gap: 10px;
+      pointer-events: none;
+    }
+    #chip {
+      pointer-events: auto; cursor: pointer;
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 16px; border-radius: 999px;
+      background: var(--glass);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      font-weight: 600;
+    }
+    #dots { display: flex; gap: 5px; }
+    #dots span { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,.3); transition: background .2s, transform .2s; }
+    #dots span.on { background: var(--accent); transform: scale(1.4); }
+
+    /* Tilt meter: fills left or right from the centre tick */
+    #tune {
+      position: relative; width: 56px; height: 4px; border-radius: 2px;
+      background: rgba(255,255,255,.22);
+      transition: opacity .25s;
+    }
+    #tune::after {
+      content: ""; position: absolute; left: 50%; top: -3px;
+      width: 1px; height: 10px; background: rgba(255,255,255,.6);
+    }
+    #tune i { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: var(--accent); }
+
+    #hint, #status, #frozen {
+      max-width: min(90vw, 28rem); text-align: center;
+      padding: 8px 14px; border-radius: 12px;
+      background: var(--glass); color: var(--muted); font-size: .9rem; line-height: 1.4;
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      transition: opacity .3s;
+    }
+    #frozen { color: var(--ice); }
+    #status.error { color: var(--error); }
+    #debug {
+      position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); left: 12px;
+      padding: 10px 12px; border-radius: 10px;
+      background: rgba(0,0,0,.6); color: #fff;
+      font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+      white-space: pre; pointer-events: none;
+    }
+    .gone { opacity: 0; }
+    [hidden] { display: none !important; }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="gl"></canvas>
+
+  <div id="intro">
+    <div class="card">
+      <h1>Portal filters</h1>
+      <p>Hold up both hands with your index fingers and thumbs out. A portal opens between them.</p>
+      <ul class="gestures">
+        <li><b>Pinch to switch.</b> Bring your hands together, or pinch each index to its thumb.</li>
+        <li><b>Swipe to go back.</b> Flick the portal right for the previous filter, left for the next.</li>
+        <li><b>Tilt to tune.</b> Raise one hand above the other to dial the filter up or down.</li>
+        <li><b>Fist to freeze.</b> Make a fist to pin the portal in place. Make a fist again to release it.</li>
+      </ul>
+      <button id="start">Start camera</button>
+      <div id="intro-status" role="status"></div>
+    </div>
+  </div>
+
+  <div id="hud" hidden>
+    <div id="hint" class="gone">Hold up both hands, index and thumb out</div>
+    <div id="frozen" hidden>Frozen. Make a fist to release.</div>
+    <div id="status" hidden role="status"></div>
+    <div id="chip" title="Tap, or press → / ← to switch filters. F freezes. D shows tracking stats.">
+      <span id="filterName">Grid</span>
+      <span id="tune" class="gone"><i></i></span>
+      <span id="dots"></span>
+    </div>
+  </div>
+  <div id="debug" hidden></div>
+
+  <script type="module">
+    import { FilesetResolver, HandLandmarker }
+      from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+    const MP_WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+    const MODEL   = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+
+    const FILTERS = ["Grid", "Posterize", "Halftone", "Chromatic", "Thermal", "Vintage", "Frosted glass", "Pink halftone"];
+
+    // ================= Tuning =================
+    // Distances are in "palm lengths" (wrist to middle knuckle), so gestures
+    // behave the same close to or far from the camera.
+
+    // Pinch
+    const CLOSE_AT         = 0.45;  // portal's narrowest side below this -> switch
+    const REOPEN_AT        = 0.80;  // must reopen past this before another switch
+    const LOSS_CLOSE_AT    = 0.90;  // hands vanished while closing below this -> switch
+    const PINCH_CONFIRM_MS = 100;   // wait this long to be sure it's a pinch, not a fist forming
+    const COOLDOWN_MS      = 400;
+
+    // Finger curl = fingertip-to-wrist / knuckle-to-wrist. Straight finger ≈ 1.7+, fist ≈ 0.8–1.0.
+    const FIST_CURL        = 1.05;  // every finger below this = fist
+    const INDEX_CURLED     = 1.08;  // index below this = hand is curling, so it isn't a pinch
+    const INDEX_EXTENDED   = 1.30;  // both indexes above this = clean portal pose
+    const FIST_HOLD_MS     = 250;   // hold a fist this long to toggle freeze
+    const FIST_RELEASE_MS  = 150;
+
+    // Swipe
+    const SWIPE_WINDOW_MS   = 180;  // the portal has to travel...
+    const SWIPE_DIST        = 1.5;  // ...this many palm lengths sideways within the window
+    const SWIPE_COOLDOWN_MS = 700;
+
+    // Tilt
+    const TILT_DEADZONE = 5;        // degrees of tilt ignored around level
+    const TILT_RANGE    = 30;       // degrees past the deadzone for full strength
+
+    // Smoothing
+    const MIN_CUTOFF = 1.2;         // One Euro: lower = steadier when still
+    const BETA       = 0.02;        // One Euro: higher = less lag when moving
+    const RENDER_TAU = 0.03;        // seconds; per-frame easing of the drawn portal
+    const FADE_TAU   = 0.06;
+    const TUNE_TAU   = 0.08;
+    const TRANS_S    = 0.35;        // filter transition length
+    const LOST_MS    = 150;
+
+    const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const $ = (id) => document.getElementById(id);
+    const video = $("video"), canvas = $("gl");
+
+    // ================= UI =================
+    const dotsEl = $("dots");
+    FILTERS.forEach(() => dotsEl.appendChild(document.createElement("span")));
+
+    function showFilter() {
+      $("filterName").textContent = FILTERS[filterIdx];
+      [...dotsEl.children].forEach((d, i) => d.classList.toggle("on", i === filterIdx));
+    }
+    function introStatus(msg, isError = false) {
+      const el = $("intro-status");
+      el.textContent = msg;
+      el.classList.toggle("error", isError);
+    }
+    function hudStatus(msg, isError = false) {
+      const el = $("status");
+      el.hidden = !msg;
+      el.textContent = msg || "";
+      el.classList.toggle("error", isError);
+    }
+    function showTune(t, visible) {
+      const bar = $("tune").firstElementChild;
+      const pct = t * 100;
+      bar.style.left  = Math.min(50, pct) + "%";
+      bar.style.width = Math.abs(pct - 50) + "%";
+      $("tune").classList.toggle("gone", !visible);
+    }
+
+    // ================= State =================
+    let filterIdx = 0, prevFilter = 0, trans = 1, transDir = [0, 0];
+    let landmarker = null, trackingReady = false, startedAt = 0;
+    let lastVideoTime = -1;
+
+    let tracked = null;   // One-Euro-filtered corners, mirrored camera px: [L index, L thumb, R index, R thumb]
+    let display = null;   // eased version of `tracked`, updated every render frame
+    let lastSeen = -Infinity;
+    let portalAlpha = 0;
+
+    // Pinch
+    let closed = false, pendingPinchAt = null, lastSwitch = -Infinity;
+    let collapse = null, prevCollapse = null, collapseAt = -Infinity;
+    let anyCurled = false;
+
+    // Fist / freeze
+    let fistSince = null, notFistSince = null, fistLatched = false, anyFist = false;
+    let freezeRequest = false, frozen = false, frozenQuad = null, frozenTune = 0.5;
+    let poseGood = false, goodQuad = null, goodAt = -Infinity, goodTune = 0.5;
+
+    // Swipe
+    let swipeHistory = [], lastSwipe = -Infinity;
+
+    // Tilt
+    let tiltDeg = 0, targetTune = 0.5, tune = 0.5;
+
+    // Debug
+    let showDebug = false, detectCount = 0, detectFps = 0, fpsWindowStart = 0;
+    let handsSeen = 0, indexCurls = [];
+
+    function switchFilter(step = 1, dir = [0, 0]) {
+      prevFilter = filterIdx;
+      filterIdx = (filterIdx + step + FILTERS.length) % FILTERS.length;
+      trans = reduceMotion ? 1 : 0;
+      transDir = dir;
+      showFilter();
+    }
+    $("chip").addEventListener("click", () => switchFilter(1));
+    addEventListener("keydown", (e) => {
+      if (e.key === "ArrowRight" || e.key === " ") { switchFilter(1, [-1, 0]); e.preventDefault(); }
+      if (e.key === "ArrowLeft") switchFilter(-1, [1, 0]);
+      if (e.key === "f" || e.key === "F") freezeRequest = true;
+      if (e.key === "d" || e.key === "D") { showDebug = !showDebug; $("debug").hidden = !showDebug; }
+    });
+
+    // ================= One Euro filter =================
+    class OneEuro {
+      constructor(minCutoff, beta, dCutoff = 1.0) {
+        this.minCutoff = minCutoff; this.beta = beta; this.dCutoff = dCutoff;
+        this.x = null; this.dx = 0; this.t = 0;
+      }
+      static alpha(cutoff, dt) { return 1 / (1 + 1 / (2 * Math.PI * cutoff * dt)); }
+      reset() { this.x = null; }
+      filter(x, t) {
+        if (this.x === null) { this.x = x; this.dx = 0; this.t = t; return x; }
+        const dt = Math.max(t - this.t, 1e-3);
+        this.t = t;
+        this.dx += OneEuro.alpha(this.dCutoff, dt) * ((x - this.x) / dt - this.dx);
+        const cutoff = this.minCutoff + this.beta * Math.abs(this.dx);
+        this.x += OneEuro.alpha(cutoff, dt) * (x - this.x);
+        return this.x;
+      }
+    }
+    const euro = Array.from({ length: 8 }, () => new OneEuro(MIN_CUTOFF, BETA));
+
+    // ================= Hand tracking =================
+    async function createLandmarker() {
+      const fileset = await FilesetResolver.forVisionTasks(MP_WASM);
+      const opts = (delegate) => ({
+        baseOptions: { modelAssetPath: MODEL, delegate },
+        runningMode: "VIDEO",
+        numHands: 2,
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+      try {
+        return await HandLandmarker.createFromOptions(fileset, opts("GPU"));
+      } catch (e) {
+        console.warn("GPU delegate failed, falling back to CPU:", e);
+        return await HandLandmarker.createFromOptions(fileset, opts("CPU"));
+      }
+    }
+    const landmarkerPromise = createLandmarker();
+
+    const WRIST = 0, THUMB_TIP = 4, INDEX_TIP = 8, MIDDLE_MCP = 9;
+    const FINGERS = [[8, 5], [12, 9], [16, 13], [20, 17]];   // [tip, knuckle] for index..pinky
+    const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+    function handPose(lm, toPx) {
+      const w = toPx(lm[WRIST]);
+      const curls = FINGERS.map(([tip, mcp]) =>
+        dist(toPx(lm[tip]), w) / Math.max(dist(toPx(lm[mcp]), w), 1));
+      return { index: curls[0], fist: curls.every((c) => c < FIST_CURL) };
+    }
+
+    function trackHands(result, vw, vh, now) {
+      const hands = result.landmarks || [];
+      handsSeen = hands.length;
+      const toPx = (p) => [(1 - p.x) * vw, p.y * vh];   // mirrored camera pixels
+
+      // Fist works with one or two hands visible.
+      const poses = hands.map((h) => handPose(h, toPx));
+      anyFist = poses.some((p) => p.fist);
+      anyCurled = poses.some((p) => p.index < INDEX_CURLED);
+      indexCurls = poses.map((p) => p.index);
+      updateFist(anyFist, now);
+
+      poseGood = false;
+      if (hands.length < 2) { handleLoss(now); return; }
+
+      let [A, B] = hands;
+      let [L, R] = toPx(A[WRIST])[0] <= toPx(B[WRIST])[0] ? [A, B] : [B, A];
+      const palm = (dist(toPx(L[WRIST]), toPx(L[MIDDLE_MCP])) + dist(toPx(R[WRIST]), toPx(R[MIDDLE_MCP]))) / 2;
+
+      // Hands touching: keep whichever left/right assignment matches last frame.
+      const recent = tracked && now - lastSeen < 300;
+      if (recent && Math.abs(toPx(L[WRIST])[0] - toPx(R[WRIST])[0]) < palm) {
+        const cost = (l, r) => dist(toPx(l[INDEX_TIP]), tracked[0]) + dist(toPx(r[INDEX_TIP]), tracked[2]);
+        if (cost(R, L) < cost(L, R)) [L, R] = [R, L];
+      }
+
+      const raw = [L[INDEX_TIP], L[THUMB_TIP], R[INDEX_TIP], R[THUMB_TIP]].map(toPx);
+      const t = now / 1000;
+      if (!recent) { euro.forEach((f) => f.reset()); swipeHistory = []; }
+      tracked = raw.map((p, i) => [euro[i * 2].filter(p[0], t), euro[i * 2 + 1].filter(p[1], t)]);
+      if (!recent || !display) display = tracked.map((p) => [...p]);
+      lastSeen = now;
+
+      const width  = (dist(tracked[0], tracked[2]) + dist(tracked[1], tracked[3])) / 2;
+      const height = (dist(tracked[0], tracked[1]) + dist(tracked[2], tracked[3])) / 2;
+      prevCollapse = collapse;
+      collapse = Math.min(width, height) / Math.max(palm, 1);
+      collapseAt = now;
+
+      if (frozen) { swipeHistory = []; return; }   // portal is pinned; only the fist gesture is live
+
+      const pL = handPose(L, toPx), pR = handPose(R, toPx);
+      poseGood = pL.index > INDEX_EXTENDED && pR.index > INDEX_EXTENDED && collapse > 0.7;
+
+      // ---- Tilt: angle of the portal's top + bottom edges. Right hand higher = positive.
+      if (width > palm) {
+        const vx = (tracked[2][0] - tracked[0][0]) + (tracked[3][0] - tracked[1][0]);
+        const vy = (tracked[2][1] - tracked[0][1]) + (tracked[3][1] - tracked[1][1]);
+        tiltDeg = Math.atan2(-vy, vx) * 180 / Math.PI;
+        const past = Math.max(0, Math.abs(tiltDeg) - TILT_DEADZONE) * Math.sign(tiltDeg);
+        targetTune = Math.min(1, Math.max(0, 0.5 + 0.5 * past / TILT_RANGE));
+      }
+
+      // ---- Swipe: fast sideways travel of the portal's centre (raw, unsmoothed).
+      const cx = raw.reduce((s, p) => s + p[0], 0) / 4, cy = raw.reduce((s, p) => s + p[1], 0) / 4;
+      swipeHistory.push({ t: now, x: cx, y: cy });
+      while (swipeHistory.length && now - swipeHistory[0].t > SWIPE_WINDOW_MS) swipeHistory.shift();
+      const old = swipeHistory[0];
+      const dx = (cx - old.x) / palm, dy = (cy - old.y) / palm;
+      if (Math.abs(dx) > SWIPE_DIST && Math.abs(dx) > 2 * Math.abs(dy) && collapse > 0.6 &&
+          now - lastSwipe > SWIPE_COOLDOWN_MS) {
+        // Moved right = back (previous), moved left = next.
+        switchFilter(dx > 0 ? -1 : 1, [Math.sign(dx), 0]);
+        lastSwipe = lastSwitch = now;
+        pendingPinchAt = null;
+        swipeHistory = [];
+        return;
+      }
+
+      // ---- Pinch, with a short confirm window so a forming fist doesn't count.
+      if (anyCurled) {
+        pendingPinchAt = null;
+        closed = true;              // must reopen properly before the next pinch
+      } else if (!closed && collapse < CLOSE_AT && now - lastSwitch > COOLDOWN_MS) {
+        if (pendingPinchAt === null) pendingPinchAt = now;
+        else if (now - pendingPinchAt >= PINCH_CONFIRM_MS) {
+          closed = true; pendingPinchAt = null; lastSwitch = now; switchFilter(1);
+        }
+      } else {
+        if (collapse >= CLOSE_AT) pendingPinchAt = null;
+        if (closed && collapse > REOPEN_AT) closed = false;
+      }
+    }
+
+    // Hands pressed together can make MediaPipe drop one before the portal
+    // reaches the close threshold. If it was small and shrinking, count it.
+    function handleLoss(now) {
+      pendingPinchAt = null;
+      if (frozen || closed || anyCurled || collapse === null || prevCollapse === null) return;
+      if (now - collapseAt < 250 && collapse < LOSS_CLOSE_AT && collapse <= prevCollapse &&
+          now - lastSwitch > COOLDOWN_MS) {
+        closed = true; lastSwitch = now; switchFilter(1);
+        collapse = null;
+      }
+    }
+
+    function updateFist(isFist, now) {
+      if (isFist) {
+        notFistSince = null;
+        if (fistSince === null) fistSince = now;
+        if (!fistLatched && now - fistSince >= FIST_HOLD_MS) { fistLatched = true; freezeRequest = true; }
+      } else {
+        fistSince = null;
+        if (fistLatched) {
+          if (notFistSince === null) notFistSince = now;
+          else if (now - notFistSince >= FIST_RELEASE_MS) { fistLatched = false; notFistSince = null; }
+        }
+      }
+    }
+
+    // ================= WebGL =================
+    const VERT = `#version 300 es
+      void main() {
+        vec2 v = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+        gl_Position = vec4(v * 2.0 - 1.0, 0.0, 1.0);
+      }`;
+
+    const FRAG = `#version 300 es
+      precision highp float;
+      uniform sampler2D uVideo;
+      uniform sampler2D uFrozen;
+      uniform int   uUseFrozen;
+      uniform vec2  uRes;
+      uniform vec4  uCover;      // offsetX, offsetY, drawnW, drawnH of the video (object-fit: cover)
+      uniform vec2  uQuad[4];    // portal corners in canvas px, top-down y
+      uniform vec4  uBox;        // portal bounding box
+      uniform float uAlpha;
+      uniform int   uFilter;
+      uniform int   uPrevFilter;
+      uniform float uTrans;      // 0..1 transition from uPrevFilter to uFilter
+      uniform vec2  uTransDir;   // wipe direction; (0,0) = radial
+      uniform float uTune;       // 0..1, 0.5 = the original look
+      uniform float uUnit;
+      uniform float uDpr;
+      uniform float uTime;
+      uniform vec3  uOutline;
+      out vec4 outColor;
+
+      bool gFrozen = false;
+
+      vec3 cam(vec2 p) {
+        vec2 uv = (p - uCover.xy) / uCover.zw;
+        uv.x = 1.0 - uv.x;
+        return gFrozen ? texture(uFrozen, uv).rgb : texture(uVideo, uv).rgb;
+      }
+      float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+      float hash(vec2 p) {
+        vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+        p3 += dot(p3, p3.yzx + 33.33);
+        return fract((p3.x + p3.y) * p3.z);
+      }
+      vec3 rgb(int r, int g, int b) { return vec3(r, g, b) / 255.0; }
+
+      bool inQuad(vec2 p) {
+        bool inside = false;
+        for (int i = 0; i < 4; i++) {
+          vec2 a = uQuad[i], b = uQuad[(i + 3) % 4];
+          if ((a.y > p.y) != (b.y > p.y) &&
+              p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+        }
+        return inside;
+      }
+      float segDist(vec2 p, vec2 a, vec2 b) {
+        vec2 pa = p - a, ba = b - a;
+        float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-4), 0.0, 1.0);
+        return length(pa - ba * h);
+      }
+      float edgeDist(vec2 p) {
+        return min(min(segDist(p, uQuad[0], uQuad[1]), segDist(p, uQuad[1], uQuad[2])),
+                   min(segDist(p, uQuad[2], uQuad[3]), segDist(p, uQuad[3], uQuad[0])));
+      }
+
+      vec3 halftone(vec2 p, float cell, float div, vec3 paper, vec3 ink) {
+        vec2 q = p / uUnit;
+        vec2 cellId = floor(q / cell);
+        vec2 local = q - (cellId + 0.5) * cell;
+        float g = luma(cam((cellId + 0.5) * cell * uUnit));
+        float r = (1.0 - g) * (cell / div);
+        float aa = 1.0 / uUnit;
+        return mix(paper, ink, 1.0 - smoothstep(r - aa, r + aa, length(local)));
+      }
+
+      vec3 jet(float t) {
+        return clamp(vec3(1.5 - abs(4.0 * t - 3.0),
+                          1.5 - abs(4.0 * t - 2.0),
+                          1.5 - abs(4.0 * t - 1.0)), 0.0, 1.0);
+      }
+
+      // t = tune (0..1). k = -1..1, with 0 matching the Python filters.
+      vec3 applyFilter(int id, vec2 p, vec3 c, float t) {
+        vec2 q = p / uUnit;
+        float k = (t - 0.5) * 2.0;
+
+        if (id == 0) {                                  // grid: line spacing
+          float spacing = 22.0 * pow(2.5, k);
+          vec2 m = mod(q, spacing);
+          return (m.x < 1.0 || m.y < 1.0) ? mix(c, vec3(235.0 / 255.0), 0.75) : c;
+        }
+        if (id == 1) {                                  // posterize: shifts the colour bands
+          float g = luma(c) * 255.0 + k * 70.0;
+          if (g < 60.0)  return rgb(10, 8, 15);
+          if (g < 130.0) return rgb(214, 30, 118);
+          if (g < 195.0) return rgb(235, 140, 35);
+          return rgb(240, 240, 235);
+        }
+        if (id == 2) {                                  // halftone: dot size
+          return halftone(p, 6.0 * pow(3.0, k), 1.4, vec3(245.0 / 255.0), vec3(15.0 / 255.0));
+        }
+        if (id == 3) {                                  // chromatic: channel split distance
+          float s = 6.0 * pow(4.0, k) * uUnit;
+          vec3 o = vec3(cam(p + vec2(s, 0.0)).r, c.g, cam(p - vec2(s, 0.0)).b);
+          if (mod(floor(q.y), 3.0) < 1.0) o *= 0.72;
+          return o;
+        }
+        if (id == 4) {                                  // thermal: contrast
+          return jet(clamp((luma(c) - 0.5) * pow(3.0, k) + 0.5, 0.0, 1.0));
+        }
+        if (id == 5) {                                  // vintage: vignette + grain amount
+          vec3 s = clamp(vec3(dot(c, vec3(0.393, 0.769, 0.189)),
+                              dot(c, vec3(0.349, 0.686, 0.168)),
+                              dot(c, vec3(0.272, 0.534, 0.131))), 0.0, 1.0);
+          vec2 ctr = (uBox.xy + uBox.zw) * 0.5;
+          float maxD = max(length(uBox.zw - ctr), 1.0);
+          s *= clamp(1.0 - t * length(p - ctr) / maxD, 0.0, 1.0);
+          float frame = floor(uTime * 24.0);
+          s += hash(floor(p) + vec2(frame * 17.0, frame * 31.0)) * (50.0 * t / 255.0);
+          return min(s, vec3(1.0));
+        }
+        if (id == 6) {                                  // frosted glass: blur radius
+          vec3 acc = vec3(0.0); float wsum = 0.0;
+          float sigma = 6.0 * pow(3.0, k) * uUnit;
+          for (int i = 0; i < 40; i++) {
+            float fi = float(i);
+            float r = sqrt(fi / 40.0) * 2.5 * sigma;
+            float a = fi * 2.39996;
+            float w = exp(-(r * r) / (2.0 * sigma * sigma));
+            acc += cam(p + vec2(cos(a), sin(a)) * r) * w;
+            wsum += w;
+          }
+          return mix(acc / wsum, vec3(1.0), 0.45);
+        }
+        return halftone(p, 5.0 * pow(3.0, k), 1.3, rgb(245, 190, 215), rgb(130, 20, 55));  // pink halftone
+      }
+
+      void main() {
+        vec2 p = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+        vec3 live = cam(p);
+        vec3 c = live;
+        if (uAlpha > 0.001) {
+          float d  = edgeDist(p);
+          float sd = inQuad(p) ? d : -d;
+          float aa = uDpr;
+          float cover = smoothstep(-aa, aa, sd) * uAlpha;
+          if (cover > 0.0) {
+            gFrozen = uUseFrozen == 1;
+            vec3 src = cam(p);
+            vec3 f = applyFilter(uFilter, p, src, uTune);
+
+            if (uTrans < 1.0) {
+              vec3 old = applyFilter(uPrevFilter, p, src, uTune);
+              vec2 ctr = (uBox.xy + uBox.zw) * 0.5;
+              vec2 hsz = max((uBox.zw - uBox.xy) * 0.5, vec2(1.0));
+              float u;   // 0 where the new filter starts, 1 where it finishes
+              if (dot(uTransDir, uTransDir) > 0.0) {
+                float ext = abs(uTransDir.x) * hsz.x + abs(uTransDir.y) * hsz.y;
+                u = (dot(p - ctr, uTransDir) / ext + 1.0) * 0.5;   // wipes in the swipe direction
+              } else {
+                u = length((p - ctr) / hsz) / 1.4142;              // grows out from the centre
+              }
+              float front = uTrans * 1.3 - 0.15;
+              float m = 1.0 - smoothstep(front - 0.04, front + 0.04, u);
+              f = mix(old, f, m);
+              f += exp(-abs(u - front) * 40.0) * 0.6 * (1.0 - uTrans);   // bright leading edge
+            }
+            c = mix(live, min(f, vec3(1.0)), cover);
+            gFrozen = false;
+          }
+          float line = 0.75 * uDpr;
+          c = mix(c, uOutline, (1.0 - smoothstep(line, line + aa, d)) * uAlpha);
+        }
+        outColor = vec4(c, 1.0);
+      }`;
+
+    let gl, U = {};
+    let videoTex, snapTex, frozenTex, videoFbo;
+
+    function makeTexture() {
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      return t;
+    }
+
+    function initGL() {
+      gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
+      if (!gl) throw new Error("This browser doesn't support WebGL2. Try an up-to-date Chrome, Edge, Firefox or Safari.");
+
+      const compile = (type, src) => {
+        const s = gl.createShader(type);
+        gl.shaderSource(s, src);
+        gl.compileShader(s);
+        if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+        return s;
+      };
+      const prog = gl.createProgram();
+      gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+      gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+      gl.useProgram(prog);
+
+      for (const name of ["uVideo", "uFrozen", "uUseFrozen", "uRes", "uCover", "uQuad", "uBox", "uAlpha",
+                          "uFilter", "uPrevFilter", "uTrans", "uTransDir", "uTune", "uUnit", "uDpr", "uTime", "uOutline"]) {
+        U[name] = gl.getUniformLocation(prog, name);
+      }
+      gl.uniform1i(U.uVideo, 0);
+      gl.uniform1i(U.uFrozen, 1);
+
+      videoTex = makeTexture();
+      snapTex = makeTexture();     // latest "clean pose" frame, kept in case a fist follows
+      frozenTex = makeTexture();
+      videoFbo = gl.createFramebuffer();
+    }
+
+    // GPU-side copy of the current camera frame into another texture.
+    function copyVideoTo(tex, vw, vh) {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, videoFbo);
+      gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, videoTex, 0);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, vw, vh, 0);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    }
+
+    const cloneQuad = (q) => q.map((p) => [...p]);
+
+    function toggleFreeze(now, vw, vh) {
+      if (frozen) {
+        frozen = false;
+        closed = true;            // don't let the releasing fist count as a pinch
+        $("frozen").hidden = true;
+        return;
+      }
+      // Freeze the portal as it was just before the fist started closing,
+      // otherwise one side has already collapsed into the fist.
+      if (goodQuad && now - goodAt < 1000) {
+        [frozenTex, snapTex] = [snapTex, frozenTex];
+        frozenQuad = cloneQuad(goodQuad);
+        frozenTune = goodTune;
+      } else if (display && now - lastSeen < 500) {
+        copyVideoTo(frozenTex, vw, vh);
+        frozenQuad = cloneQuad(display);
+        frozenTune = tune;
+      } else {
+        return;                    // no portal to freeze
+      }
+      frozen = true;
+      $("frozen").hidden = false;
+    }
+
+    let dpr = 1;
+    function resize() {
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.round(innerWidth * dpr), h = Math.round(innerHeight * dpr);
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    }
+
+    // ================= Render loop =================
+    let lastFrame = 0;
+    function frame(now) {
+      requestAnimationFrame(frame);
+      if (video.readyState < 2 || !video.videoWidth) return;
+      resize();
+      const dt = Math.min((now - (lastFrame || now)) / 1000, 0.1);
+      lastFrame = now;
+
+      const vw = video.videoWidth, vh = video.videoHeight;
+      const W = canvas.width, H = canvas.height;
+      const scale = Math.max(W / vw, H / vh);
+      const dW = vw * scale, dH = vh * scale;
+      const offX = (W - dW) / 2, offY = (H - dH) / 2;
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, videoTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+
+      if (landmarker && video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        try { trackHands(landmarker.detectForVideo(video, now), vw, vh, now); }
+        catch (e) { console.error(e); }
+        detectCount++;
+      }
+      if (now - fpsWindowStart > 1000) { detectFps = detectCount; detectCount = 0; fpsWindowStart = now; }
+
+      const active = tracked && now - lastSeen < LOST_MS;
+      if (!active && !frozen && now - lastSeen > 500) targetTune = 0.5;
+
+      if (active && display) {
+        const k = 1 - Math.exp(-dt / RENDER_TAU);
+        for (let i = 0; i < 4; i++) {
+          display[i][0] += (tracked[i][0] - display[i][0]) * k;
+          display[i][1] += (tracked[i][1] - display[i][1]) * k;
+        }
+      }
+      tune += (targetTune - tune) * (1 - Math.exp(-dt / TUNE_TAU));
+      portalAlpha += ((active || frozen ? 1 : 0) - portalAlpha) * (1 - Math.exp(-dt / FADE_TAU));
+      trans = Math.min(1, trans + dt / TRANS_S);
+
+      // Remember the last clean portal pose (and its camera frame) for freezing.
+      if (active && poseGood && display) {
+        copyVideoTo(snapTex, vw, vh);
+        goodQuad = cloneQuad(display);
+        goodAt = now;
+        goodTune = tune;
+      }
+      if (freezeRequest) { freezeRequest = false; toggleFreeze(now, vw, vh); }
+
+      const geom = frozen ? frozenQuad : display;
+      const drawTune = frozen ? frozenTune : tune;
+      const quad = new Float32Array(8);
+      let box = [0, 0, 0, 0];
+      if (geom) {
+        const pts = [0, 2, 3, 1].map((i) => [offX + geom[i][0] * scale, offY + geom[i][1] * scale]);
+        pts.forEach((pt, i) => { quad[i * 2] = pt[0]; quad[i * 2 + 1] = pt[1]; });
+        const xs = pts.map((pt) => pt[0]), ys = pts.map((pt) => pt[1]);
+        box = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+      }
+
+      $("hint").classList.toggle("gone", !(trackingReady && !active && !frozen && now - Math.max(lastSeen, startedAt) > 2000));
+      showTune(drawTune, Math.abs(drawTune - 0.5) > 0.03 && (active || frozen));
+
+      if (showDebug) {
+        $("debug").textContent =
+          `hands      ${handsSeen}   index curl ${indexCurls.map((c) => c.toFixed(2)).join(" ") || "–"}\n` +
+          `fist       ${anyFist ? "yes" : "no"}   (all fingers < ${FIST_CURL})   frozen ${frozen ? "yes" : "no"}\n` +
+          `collapse   ${collapse === null ? "–" : collapse.toFixed(2)}  (switch < ${CLOSE_AT}, re-arm > ${REOPEN_AT})\n` +
+          `pinch      ${closed ? "closed, open wider to re-arm" : pendingPinchAt !== null ? "confirming" : "armed"}\n` +
+          `tilt       ${tiltDeg.toFixed(1)}°   tune ${drawTune.toFixed(2)}\n` +
+          `tracking   ${detectFps} fps   camera ${vw}×${vh}`;
+      }
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, W, H);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, videoTex);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, frozenTex);
+
+      const eased = trans * trans * (3 - 2 * trans);
+      gl.uniform1i(U.uUseFrozen, frozen ? 1 : 0);
+      gl.uniform2f(U.uRes, W, H);
+      gl.uniform4f(U.uCover, offX, offY, dW, dH);
+      gl.uniform2fv(U.uQuad, quad);
+      gl.uniform4f(U.uBox, ...box);
+      gl.uniform1f(U.uAlpha, geom ? portalAlpha : 0);
+      gl.uniform1i(U.uFilter, filterIdx);
+      gl.uniform1i(U.uPrevFilter, prevFilter);
+      gl.uniform1f(U.uTrans, eased);
+      gl.uniform2f(U.uTransDir, transDir[0], transDir[1]);
+      gl.uniform1f(U.uTune, drawTune);
+      gl.uniform1f(U.uUnit, Math.max(dW, dH) / 640);
+      gl.uniform1f(U.uDpr, dpr);
+      gl.uniform1f(U.uTime, now / 1000);
+      if (frozen) gl.uniform3f(U.uOutline, 0.74, 0.84, 1.0);
+      else gl.uniform3f(U.uOutline, 1, 1, 1);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    // ================= Camera =================
+    function cameraErrorMessage(err) {
+      const embedded = window.self !== window.top;
+      const embedNote = embedded
+        ? " This page is running inside another site's frame, which usually blocks the camera. Open it in its own tab."
+        : "";
+      switch (err.name) {
+        case "NotAllowedError":
+        case "SecurityError":
+          return "Camera access was blocked. Click the camera icon in the address bar, allow it, then reload." + embedNote;
+        case "NotFoundError":
+        case "OverconstrainedError":
+          return "No camera was found. Plug one in or check that it's enabled, then try again.";
+        case "NotReadableError":
+          return "The camera is being used by another app or tab (Zoom, OBS, Discord…). Close it and try again.";
+        default:
+          return `The camera didn't start: ${err.message || err.name}.` + embedNote;
+      }
+    }
+
+    async function start() {
+      const btn = $("start");
+
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        introStatus("The camera only works over HTTPS or on localhost. Open this page from your Vercel URL (https://…) or run a local server.", true);
+        return;
+      }
+
+      btn.disabled = true;
+      introStatus("Waiting for camera permission…");
+
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "user",
+            width: { ideal: 1280 }, height: { ideal: 720 },
+            frameRate: { ideal: 60 },
+          },
+          audio: false,
+        });
+      } catch (err) {
+        console.error(err);
+        introStatus(cameraErrorMessage(err), true);
+        btn.disabled = false;
+        return;
+      }
+
+      video.srcObject = stream;
+      try { await video.play(); } catch (e) { console.warn(e); }
+
+      try { initGL(); }
+      catch (err) {
+        console.error(err);
+        introStatus(err.message, true);
+        return;
+      }
+
+      $("intro").classList.add("hidden");
+      $("hud").hidden = false;
+      showFilter();
+      startedAt = performance.now();
+      requestAnimationFrame(frame);
+
+      hudStatus("Loading hand tracking…");
+      try {
+        landmarker = await landmarkerPromise;
+        trackingReady = true;
+        hudStatus("");
+      } catch (err) {
+        console.error(err);
+        hudStatus("Hand tracking didn't load, so the portal won't appear. Check your connection and reload. You can still switch filters with the button.", true);
+      }
+    }
+
+    $("start").addEventListener("click", start);
+  </script>
+</body>
+</html>
